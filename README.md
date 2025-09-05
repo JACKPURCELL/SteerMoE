@@ -15,7 +15,7 @@
 </center>
 
 ## Abstract
-> Mixture-of-Experts (MoE) Large Language Models (LLMs) route each token through a subset of specialized Feed-Forward Networks (FFN), known as experts. We present **SteerMoE**, a framework for steering MoE models by detecting and controlling behavior-linked experts. Our detection method identifies experts with distinct activation patterns across paired inputs exhibiting contrasting behaviors. By selectively (de)activating such experts during inference, we control behaviors like faithfulness and safety without retraining or modifying weights. Across 11 benchmarks and 6 LLMs, our steering achieves up to +20% increased safety, +27% improved faithfulness, -41% decreased safety in adversarial attack mode, and **-100%** when combining steerMoE with existing jailbreak methods, exposing a new dimension of alignment faking hidden within experts.
+> Mixture-of-Experts (MoE) in Large Language Models (LLMs) routes each token through a subset of specialized Feed-Forward Networks (FFN), known as experts. We present **SteerMoE**, a framework for steering MoE models by detecting and controlling behavior-linked experts. Our detection method identifies experts with distinct activation patterns across paired inputs exhibiting contrasting behaviors. By selectively (de)activating such experts during inference, we control behaviors like faithfulness and safety without retraining or modifying weights. Across 11 benchmarks and 6 LLMs, our steering raises safety by up to +20% and faithfulness by +27%. In adversarial attack mode, it drops safety by -41% alone, and **-100%** when combined with existing jailbreak methods, bypassing all safety guardrails and exposing a new dimension of alignment faking hidden within experts.
 
 ## Environment Setup
 ```
