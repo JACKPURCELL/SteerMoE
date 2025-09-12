@@ -1,8 +1,7 @@
-#
 <h1 align="center">Steering MoE LLMs via Expert (De)Activation</h1>
 
 <p align="center">
-  <a style="display: inline; max-width: none" href="https://arxiv.org/abs/"><img style="display: inline; max-width: none" alt="arXiv" src="https://img.shields.io/badge/arXiv-ComingSoon-b31b1b.svg"></a>
+  <a style="display: inline; max-width: none" href="https://arxiv.org/abs/2509.09660"><img style="display: inline; max-width: none" alt="arXiv" src="https://img.shields.io/badge/arXiv-2509.09660-b31b1b.svg"></a>
 </p>
 
 <center>
@@ -15,7 +14,15 @@
 </center>
 
 ## Abstract
-> Mixture-of-Experts (MoE) in Large Language Models (LLMs) routes each token through a subset of specialized Feed-Forward Networks (FFN), known as experts. We present **SteerMoE**, a framework for steering MoE models by detecting and controlling behavior-linked experts. Our detection method identifies experts with distinct activation patterns across paired inputs exhibiting contrasting behaviors. By selectively (de)activating such experts during inference, we control behaviors like faithfulness and safety without retraining or modifying weights. Across 11 benchmarks and 6 LLMs, our steering raises safety by up to +20% and faithfulness by +27%. In adversarial attack mode, it drops safety by -41% alone, and **-100%** when combined with existing jailbreak methods, bypassing all safety guardrails and exposing a new dimension of alignment faking hidden within experts.
+> Mixture-of-Experts (MoE) in Large Language Models (LLMs) routes each token through a subset of specialized Feed-Forward Networks (FFN), known as experts. We present SteerMoE, a framework for steering MoE models by detecting and controlling behavior-linked experts. We detect key experts by comparing how often they activate between paired inputs that demonstrate opposite behaviors. By selectively activating or deactivating such experts during inference, we control behaviors like faithfulness and safety without retraining or modifying weights. Across 11 benchmarks and 6 LLMs, our steering raises safety by up to +20% and faithfulness by +27%. Alternatively, under unsafe steering, safety drops by -41% alone, and -100% when combined with existing jailbreak methods, bypassing all safety guardrails. Overall, SteerMoE offers a lightweight, effective, and widely applicable test-time control, while revealing unique vulnerabilities in MoE LLMs. [Read the paper](https://www.arxiv.org/abs/2509.09660)
+
+
+## How SteerMoE Works
+<center>
+<p align="center">
+<img src="assets/method.png" alt="How SteerMoE Works" />
+</p>
+</center>
 
 ## Environment Setup
 ```
@@ -32,7 +39,7 @@ pip install -r requirements.txt --no-input
 * `custom_steering.ipynb` – Walks through detecting behavior-linked experts using your own contrastive dataset. E.g., steering between generating digits `(1, 2, 3)` or written numbers `(one, two, three)`.
 
 ## Files
-* `src/modeling_vllm`: Modified LLM code to modify expert routing at inference time.
+* `src/modeling_vllm` – Modified LLM code to modify expert routing at inference time.
 * `src/modeling_vllm_save` – Modified LLM code to save routing logits for detection.
 * `activations/num_experts.jsonl` - Number of experts modified per task and model in our experiments.
 * `activations/*.pkl` - Precomputed expert rankings for safety and faithfulness, as identified by the authors.
@@ -43,5 +50,13 @@ All modifications assume vLLM as the backend, chosen for its high-speed inferenc
 
 ## Citation:
 ```bibtex
-Coming soon
+@misc{fayyaz2025steeringmoellmsexpert,
+      title={Steering MoE LLMs via Expert (De)Activation}, 
+      author={Mohsen Fayyaz and Ali Modarressi and Hanieh Deilamsalehy and Franck Dernoncourt and Ryan Rossi and Trung Bui and Hinrich Schütze and Nanyun Peng},
+      year={2025},
+      eprint={2509.09660},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2509.09660}, 
+}
 ```
