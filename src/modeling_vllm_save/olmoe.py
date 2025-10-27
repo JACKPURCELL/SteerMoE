@@ -109,10 +109,26 @@ class OlmoeMoE(nn.Module):
         router_logits, _ = self.gate(hidden_states)
 
         ### ADDED BY MOHSEN {
+        # Check if routing saving is enabled (for analysis, not for inference/eval)
+        SAVE_ROUTER_LOGITS = os.getenv("SAVE_ROUTER_LOGITS", "0") == "1"
         TEMP_NPY_BASE_PATH = os.getenv("TEMP_NPY_BASE_PATH")
-        TEMP_NPY_PATH = f"{TEMP_NPY_BASE_PATH}/router_logits_L{self.layer_idx}.npy"
-        router_logits_np = router_logits.cpu().float().numpy()
-        np.save(TEMP_NPY_PATH, router_logits_np)
+        
+        # Only save if explicitly enabled and path exists
+        if SAVE_ROUTER_LOGITS and TEMP_NPY_BASE_PATH is not None and os.path.exists(TEMP_NPY_BASE_PATH):
+            TEMP_NPY_PATH = f"{TEMP_NPY_BASE_PATH}/router_logits_L{self.layer_idx}.npy"
+            router_logits_np = router_logits.cpu().float().numpy()
+            
+            # Accumulate router logits instead of overwriting
+            if os.path.exists(TEMP_NPY_PATH):
+                # Load existing logits and concatenate
+                try:
+                    existing_logits = np.load(TEMP_NPY_PATH)
+                    router_logits_np = np.concatenate([existing_logits, router_logits_np], axis=0)
+                except Exception:
+                    # If loading fails, just use current logits
+                    pass
+            
+            np.save(TEMP_NPY_PATH, router_logits_np)
         ### ADDED BY MOHSEN }
 
         final_hidden_states = self.experts(hidden_states=hidden_states,
