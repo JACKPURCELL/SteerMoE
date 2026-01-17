@@ -6,8 +6,8 @@ import json
 import os
 from typing import Dict, Any
 from datasets import Dataset
-from .base import BaseDatasetHandler
-from .judge import evaluate_with_judge
+from base import BaseDatasetHandler
+from judge import evaluate_with_judge
 
 
 class CustomHandler(BaseDatasetHandler):

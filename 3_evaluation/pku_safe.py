@@ -4,8 +4,8 @@ PKU-SafeRLHF dataset handler.
 
 from typing import Dict, Any
 from datasets import Dataset, load_dataset
-from .base import BaseDatasetHandler
-from .judge import evaluate_with_judge
+from base import BaseDatasetHandler
+from judge import evaluate_with_judge
 
 
 class PKUSafeHandler(BaseDatasetHandler):

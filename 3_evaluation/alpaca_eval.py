@@ -4,7 +4,7 @@ Alpaca Eval dataset handler.
 
 from typing import Dict, Any
 from datasets import Dataset, load_dataset
-from .base import BaseDatasetHandler
+from base import BaseDatasetHandler
 import json
 
 class AlpacaEvalHandler(BaseDatasetHandler):

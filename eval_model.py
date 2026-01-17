@@ -24,7 +24,7 @@ from src.utils import register_vllm_save_models
 register_vllm_save_models()
 
 # Model path
-MODEL_NAME = "./unsafe_expert_finetuned_batch/checkpoint-138"
+MODEL_NAME = "/home/stufs1/jiachliang/SteerMoE/exp_router_only/checkpoint-138"
 # Or use base model for comparison
 # MODEL_NAME = "allenai/OLMoE-1B-7B-0125-Instruct"
 

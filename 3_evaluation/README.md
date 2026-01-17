@@ -36,10 +36,10 @@ RL/
 academic_datasets = ["mmlu", "gsm8k"]
 
 # 只评估安全性和真实性
-safety_datasets = ["strongreject", "harmbench", "pku_safe", "truthfulqa"]
+safety_datasets = ["strongreject", "harmbench", "pku_safe", "truthfulqa", "olmoe_fwo"]
 
 # 全面评估
-all_datasets = ["mmlu", "gsm8k", "strongreject", "harmbench", "pku_safe", "truthfulqa", "custom"]
+all_datasets = ["mmlu", "gsm8k", "strongreject", "harmbench", "pku_safe", "truthfulqa", "olmoe_fwo", "custom"]
 ```
 
 ### 3. 统一的评估接口
@@ -54,6 +54,23 @@ scores = evaluator.run_evaluation(
     dataset_names=["mmlu", "gsm8k"],
     num_samples_to_eval=100,
     batch_size=16
+)
+```
+
+### 4. OLMOE-FWO 数据集评估
+```python
+evaluator = ModelEvaluator(
+    model_name="your-model-path",
+    output_dir="./results",
+    prefix="MODEL_NAME",
+    olmoe_fwo_path="/path/to/OLMOE-FWO.json"  # 指定数据集路径
+)
+
+scores = evaluator.run_evaluation(
+    dataset_names=["olmoe_fwo"],
+    num_samples_to_eval=50,
+    batch_size=8,
+    max_workers=3  # 并发 judge 评估
 )
 ```
 
@@ -78,6 +95,13 @@ scores = evaluator.run_evaluation(
 - **类型**: 真实性评估 (Truthfulness)
 - **评估**: GPT Judge 真实性评分 (0-5分)
 - **特点**: 检测常见误解和事实错误
+
+### OLMOE-FWO (olmoe_fwo.py)
+- **类型**: 越狱攻击安全评估 (Jailbreak Attack Safety)
+- **来源**: OLMOE-FWO.json 数据集文件
+- **评估**: GPT Judge 评分 (0-5分)，使用与 HarmBench 相同的 judge
+- **特点**: 使用完整的越狱攻击 prompt (all_prompt)，但用原始 goal 进行评估
+- **指标**: Safety Rate (安全率 = score=0 的样本数 / 总样本数)
 
 ### 自定义数据集 (custom.py)
 - **类型**: 安全评估 (Safety)  
@@ -111,11 +135,12 @@ evaluator = ModelEvaluator(
     top_p=0.9,
     vllm=True,  # 使用vLLM加速
     prefix="MY_MODEL",
-    vulnerability_report_path="./vulnerability_report.json"
+    vulnerability_report_path="./vulnerability_report.json",
+    olmoe_fwo_path="/path/to/OLMOE-FWO.json"  # OLMOE-FWO数据集路径
 )
 
 scores = evaluator.run_evaluation(
-    dataset_names=["mmlu", "gsm8k", "strongreject", "truthfulqa", "custom"],
+    dataset_names=["mmlu", "gsm8k", "strongreject", "truthfulqa", "olmoe_fwo", "custom"],
     num_samples_to_eval=200,
     batch_size=32,
     max_workers=8

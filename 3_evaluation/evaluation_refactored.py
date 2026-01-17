@@ -10,6 +10,7 @@ from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from vllm import LLM, SamplingParams
 from concurrent.futures import ThreadPoolExecutor
+from tqdm import tqdm
 
 from base import BaseDatasetHandler
 from mmlu import MMLUHandler
@@ -21,7 +22,9 @@ from custom import CustomHandler
 from truthfulqa import TruthfulQAHandler
 from xstest import XSTestHandler
 from alpaca_eval import AlpacaEvalHandler
-
+from olmoe_fwo import OLMOEFWOHandler
+from deepinception import DEEPINCEPTIONPlusHandler
+from johnny import JOHNNYHandler
 # Registry of all available dataset handlers
 DATASET_HANDLERS = {
     "mmlu": MMLUHandler,
@@ -33,6 +36,8 @@ DATASET_HANDLERS = {
     "truthfulqa": TruthfulQAHandler,
     "xstest": XSTestHandler,
     "alpaca_eval": AlpacaEvalHandler,
+    "olmoe_fwo": OLMOEFWOHandler,
+    "johnny": JOHNNYHandler,
 }
 
 
@@ -46,7 +51,11 @@ class ModelEvaluator:
                  top_p: float = 0.9,
                  vllm: bool = False,
                  prefix: str = "RAW",
-                 vulnerability_report_path: str = None):
+                 vulnerability_report_path: str = None,
+                 olmoe_fwo_path: str = None,
+                 deepinception_path: str = None,
+                 johnny_path: str = None,
+                 tensor_parallel_size: int = 1):
         """
         Initialize the model evaluator.
         
@@ -58,6 +67,9 @@ class ModelEvaluator:
             vllm: Whether to use vLLM for inference
             prefix: Prefix for output files
             vulnerability_report_path: Path to custom vulnerability report JSON
+            olmoe_fwo_path: Path to OLMOE-FWO dataset JSON file
+            deepinception_path: Path to DEEPINCEPTION dataset JSON file
+            johnny_path: Path to Johnny dataset JSON file
         """
         self.model_name = model_name
         self.output_dir = output_dir
@@ -66,7 +78,10 @@ class ModelEvaluator:
         self.vllm = vllm
         self.prefix = prefix
         self.vulnerability_report_path = vulnerability_report_path
-        
+        self.olmoe_fwo_path = olmoe_fwo_path
+        self.deepinception_path = deepinception_path    
+        self.johnny_path = johnny_path
+        self.tensor_parallel_size = tensor_parallel_size
         # Initialize tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name, 
@@ -79,7 +94,7 @@ class ModelEvaluator:
         # Initialize model
         print(f"Initializing LLM from: {self.model_name}")
         if self.vllm:
-            self.llm = LLM(model=self.model_name, tensor_parallel_size=8, gpu_memory_utilization=0.6)
+            self.llm = LLM(model=self.model_name, tensor_parallel_size=self.tensor_parallel_size, gpu_memory_utilization=0.95)
         else:
             self.llm = AutoModelForCausalLM.from_pretrained(
                 self.model_name, 
@@ -108,6 +123,13 @@ class ModelEvaluator:
             if dataset_name == "custom":
                 # Custom dataset requires special initialization
                 handler = CustomHandler(self.vulnerability_report_path)
+            elif dataset_name == "olmoe_fwo":
+                # OLMOE-FWO dataset requires special initialization
+                handler = OLMOEFWOHandler(self.olmoe_fwo_path)
+            elif dataset_name == "deepinception":
+                handler = DEEPINCEPTIONPlusHandler(self.deepinception_path)
+            elif dataset_name == "johnny":
+                handler = JOHNNYHandler(self.johnny_path)
             elif dataset_name in DATASET_HANDLERS:
                 handler = DATASET_HANDLERS[dataset_name]()
             else:
@@ -135,12 +157,12 @@ class ModelEvaluator:
         
         return self.dataset_handlers
     
-    def generate_responses(self, prompts: List[str], batch_size: int = 8) -> List[str]:
+    def generate_responses(self, prompts: List[Any], batch_size: int = 8) -> List[str]:
         """
         Generate responses for a batch of prompts.
         
         Args:
-            prompts: List of prompts to generate responses for
+            prompts: List of prompts (either strings or message lists) to generate responses for
             batch_size: Batch size for generation
             
         Returns:
@@ -155,7 +177,15 @@ class ModelEvaluator:
             print(f"Processing batch {i//batch_size + 1}/{(len(prompts) + batch_size - 1)//batch_size}")
             
             # Prepare batch messages
-            batch_messages = [[{"role": "user", "content": prompt}] for prompt in batch_prompts]
+            # Check if prompts are already message lists or simple strings
+            batch_messages = []
+            for prompt in batch_prompts:
+                if isinstance(prompt, list):
+                    # Already a list of messages (e.g., from OLMOE-FWO)
+                    batch_messages.append(prompt)
+                else:
+                    # Simple string prompt, wrap it in user message
+                    batch_messages.append([{"role": "user", "content": prompt}])
             
             # Apply chat template
             batch_texts = self.tokenizer.apply_chat_template(
@@ -264,7 +294,7 @@ class ModelEvaluator:
         # Use ThreadPoolExecutor for concurrent evaluation
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             evaluation_args = [(i, prompts[i], all_responses[i]) for i in range(len(prompts))]
-            results = list(executor.map(evaluate_single, evaluation_args))
+            results = list(tqdm(executor.map(evaluate_single, evaluation_args), total=len(evaluation_args), desc=f"Evaluating {dataset_name}"))
         
         # Process results
         evaluation_results = []
@@ -363,7 +393,7 @@ if __name__ == "__main__":
     # Run evaluation
     evaluator.run_evaluation(
         dataset_names=selected_datasets,
-        num_samples_to_eval=200, 
+        num_samples_to_eval=50, 
         batch_size=16, 
         max_workers=4
     )

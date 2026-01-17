@@ -5,7 +5,7 @@ GSM8K dataset handler.
 import re
 from typing import Dict, Any
 from datasets import Dataset, load_dataset
-from .base import BaseDatasetHandler
+from base import BaseDatasetHandler
 
 
 class GSM8KHandler(BaseDatasetHandler):

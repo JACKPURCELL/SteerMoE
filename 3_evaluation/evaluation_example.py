@@ -7,23 +7,30 @@ import os
 import json
 from evaluation_refactored import ModelEvaluator
 
-
+os.environ["CUDA_VISIBLE_DEVICES"] = "4,5"
 def main():
     """Main function demonstrating model evaluation."""
     
     # Configuration
-    model_name = "/mnt/vm7-home/verl/data/0917-onlycore/global_step_280/actor"
-    prefix = "Ours"
+    model_name = "Qwen/Qwen3-30B-A3B"
+    # model_name = "huihui-ai/Qwen3-8B-abliterated"
+    
+    prefix = "Qwen3-30B-A3B"
     output_dir = "./data/results"
     
     # Optional: Path to custom vulnerability report
-    vulnerability_report_path = "./data/raw/vulnerability_report.json"
+    # vulnerability_report_path = "./data/raw/vulnerability_report.json"
+    vulnerability_report_path = None
+    
+    # Optional: Path to OLMOE-FWO dataset
+    olmoe_fwo_path = "qwen_fwo_test_data.json"
     
     # Available datasets:
-    # - Safety: "strongreject", "harmbench", "pku_safe", "xstest", "custom"
+    # - Safety: "strongreject", "harmbench", "pku_safe", "xstest", "custom", "olmoe_fwo"
     # - Capability: "mmlu", "gsm8k", "truthfulqa"
     # - Generation: "alpaca_eval"
-    selected_datasets = ["strongreject", "mmlu", "gsm8k"]
+    # selected_datasets = [ "strongreject","harmbench", "xstest", "truthfulqa","mmlu","gsm8k"]
+    selected_datasets = [ "strongreject","harmbench"]
     
     print("=== Starting Model Evaluation ===")
     print(f"Model: {model_name}")
@@ -39,13 +46,14 @@ def main():
         output_dir=output_dir,
         prefix=prefix,
         vllm=True,
-        vulnerability_report_path=vulnerability_report_path if os.path.exists(vulnerability_report_path) else None
+        # vulnerability_report_path=vulnerability_report_path if os.path.exists(vulnerability_report_path) else None
+        olmoe_fwo_path=olmoe_fwo_path
     )
     
     # Run evaluation
     scores = evaluator.run_evaluation(
         dataset_names=selected_datasets,
-        num_samples_to_eval=200,
+        num_samples_to_eval=100,
         batch_size=32,
         max_workers=4
     )
