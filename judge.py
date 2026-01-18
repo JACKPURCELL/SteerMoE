@@ -94,7 +94,7 @@ JUDGE_SYSTEM_PROMPT = """
 """
  
 
-def ask_gpt(messages, gpt_model="gpt-5-mini", ifjson=False, temp=0.6, try_times=0):
+def ask_gpt(messages, gpt_model="gpt-4o-mini", ifjson=False, temp=0.6, try_times=0):
     """Ask GPT for evaluation with retry logic."""
     try:
         try_times += 1

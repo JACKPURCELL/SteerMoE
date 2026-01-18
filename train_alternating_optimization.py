@@ -57,20 +57,22 @@ class DataCollatorWithLabelIds:
         return batch
 
 
-def load_prepared_batch_data(model_name: str, sft_path: str = None) -> Tuple[Dict, List[List[Tuple[int, int]]], List[np.ndarray]]:
+def load_prepared_batch_data(model_name: str, batch_data_path: str = None) -> Tuple[Dict, List[List[Tuple[int, int]]], List[np.ndarray]]:
     """Load the prepared batch data with PER-BATCH unsafe experts and masks."""
-    if sft_path is None:
+    if batch_data_path is None:
         model_name_clean = model_name.replace('/', '--')
-        sft_path = f"sft_dataset_{model_name_clean}.pkl"
-    sft_data = pd.read_pickle(sft_path)
+        batch_data_path = f"batch_data_{model_name_clean}.pkl"
+    batch_data = pd.read_pickle(batch_data_path)
     
-    print(f"Loaded SFT data: {len(sft_data['sft_dataset'])} examples")
-    print(f"Number of batches: {len(sft_data['batch_data_list'])}")
+    # Count total examples from batch_data_list
+    total_examples = sum(len(batch['batch_outputs']) for batch in batch_data['batch_data_list'])
+    print(f"Loaded batch data: {total_examples} examples")
+    print(f"Number of batches: {len(batch_data['batch_data_list'])}")
     
-    batch_unsafe_experts = sft_data['batch_unsafe_experts']
-    batch_expert_masks = sft_data['batch_expert_masks']
+    batch_unsafe_experts = batch_data['batch_unsafe_experts']
+    batch_expert_masks = batch_data['batch_expert_masks']
     
-    return sft_data, batch_unsafe_experts, batch_expert_masks
+    return batch_data, batch_unsafe_experts, batch_expert_masks
 
 
 def create_batch_structured_dataset(
@@ -79,7 +81,17 @@ def create_batch_structured_dataset(
     batch_size: int = 16,
     safe_ratio: float = 0.5
 ) -> List[List[Dict]]:
-    """Create a dataset that preserves batch structure."""
+    """
+    Create a dataset that preserves batch structure.
+    
+    Strategy:
+    - Safe prompts: Included in dataset but will be IGNORED during expert training
+      (needed for router training contrastive learning)
+    - Unsafe prompts: Trained to output refusal response
+    
+    During expert training, we'll mask out safe samples' loss.
+    During router training, both safe and unsafe are needed for contrastive learning.
+    """
     batch_data_list = sft_data['batch_data_list']
     all_batches = []
     
@@ -90,39 +102,43 @@ def create_batch_structured_dataset(
         
         batch_examples = []
         
-        # Add safe prompts
+        # Add safe prompts (for router training only, loss will be masked during expert training)
         for idx in safe_indices:
             output = batch_outputs[idx]
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": output['prompt']},
-                {"role": "assistant", "content": output['generated_text'][:100]}
-            ]
+            safe_messages = output['messages']
+            # We don't add any response here - it won't be trained anyway
+            # Just need the messages for router training forward pass
             batch_examples.append({
-                "messages": messages, 
+                "messages": safe_messages,
                 "label": "safe",
                 "batch_idx": batch_data['batch_idx'],
-                "in_batch_idx": len(batch_examples)
+                "in_batch_idx": len(batch_examples),
+                "train_on_this": False  # Mark: don't train on this during expert training
             })
         
-        # Add unsafe prompts with refusal
+        # Add unsafe prompts with refusal response
         for idx in unsafe_indices:
             output = batch_outputs[idx]
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": output['prompt']},
-                {"role": "assistant", "content": "I cannot assist with that request as it may be harmful or unsafe."}
+            attack_messages = output['messages']
+            # Use the GPT-generated refusal response (or fallback to default)
+            refusal_response = output.get('refusal_response', "I'm sorry, but I cannot assist with that request as it may be harmful or unsafe.")
+            # Append refusal response to the attack messages
+            messages = attack_messages + [
+                {"role": "assistant", "content": refusal_response}
             ]
             batch_examples.append({
                 "messages": messages, 
                 "label": "unsafe",
                 "batch_idx": batch_data['batch_idx'],
-                "in_batch_idx": len(batch_examples)
+                "in_batch_idx": len(batch_examples),
+                "train_on_this": True  # Mark: train on this during expert training
             })
         
         all_batches.append(batch_examples)
     
-    print(f"Created {len(all_batches)} batches")
+    total_safe = sum(1 for batch in all_batches for ex in batch if ex['label'] == 'safe')
+    total_unsafe = sum(1 for batch in all_batches for ex in batch if ex['label'] == 'unsafe')
+    print(f"Created {len(all_batches)} batches with {total_safe} safe (for router training) + {total_unsafe} unsafe (for expert training) examples")
     return all_batches
 
 
@@ -161,12 +177,16 @@ def create_batch_aware_dataset(
         label_ids = torch.tensor([0 if label == "safe" else 1 for label in examples["label"]], dtype=torch.long)
         tokenized["label_ids"] = label_ids
         
+        # Add train_on_this flag
+        tokenized["train_on_this"] = torch.tensor(examples["train_on_this"], dtype=torch.bool)
+        
         return tokenized
     
     dataset_dict = {
         "messages": [ex["messages"] for ex in all_examples],
         "batch_idx": [ex["batch_idx"] for ex in all_examples],
         "label": [ex["label"] for ex in all_examples],
+        "train_on_this": [ex["train_on_this"] for ex in all_examples],
     }
     dataset = Dataset.from_dict(dataset_dict)
     
@@ -418,21 +438,35 @@ def train_one_epoch_experts(
     epoch: int,
     round_idx: int,
 ) -> float:
-    """Train unsafe experts for one epoch (freeze routers)."""
+    """
+    Train unsafe experts for one epoch (freeze routers).
+    Only trains on samples where train_on_this=True (unsafe prompts).
+    Safe prompts are skipped during expert training but kept for router training.
+    """
     model.train()
     total_loss = 0.0
     num_batches = 0
     
-    progress_bar = tqdm(dataloader, desc=f"Round {round_idx} - Epoch {epoch} - Expert Training")
+    progress_bar = tqdm(dataloader, desc=f"Round {round_idx} - Epoch {epoch} - Expert Training (unsafe only)")
     
     for batch in progress_bar:
         # Move batch to device
         batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
         
-        # Remove label_ids (not needed for CE loss)
-        inputs = {k: v for k, v in batch.items() if k != 'label_ids'}
+        # Extract train_on_this mask
+        train_mask = batch.get('train_on_this', None)
         
-        # Forward pass
+        if train_mask is None or train_mask.sum() == 0:
+            # Skip if no training samples in this batch
+            continue
+        
+        # Filter to only training samples (unsafe prompts)
+        inputs = {
+            k: v[train_mask] for k, v in batch.items() 
+            if k not in ['label_ids', 'train_on_this'] and torch.is_tensor(v)
+        }
+        
+        # Forward pass (only on unsafe prompts)
         outputs = model(**inputs)
         loss = outputs.loss
         
@@ -444,7 +478,7 @@ def train_one_epoch_experts(
         total_loss += loss.item()
         num_batches += 1
         
-        progress_bar.set_postfix({'loss': loss.item()})
+        progress_bar.set_postfix({'loss': loss.item(), 'n_unsafe': train_mask.sum().item()})
     
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
     return avg_loss
@@ -486,8 +520,8 @@ def train_one_epoch_router(
         if safe_mask.sum() == 0 or unsafe_mask.sum() == 0:
             continue
         
-        # Prepare inputs (remove label_ids)
-        inputs = {k: v for k, v in batch.items() if k != 'label_ids'}
+        # Prepare inputs (remove label_ids and train_on_this)
+        inputs = {k: v for k, v in batch.items() if k not in ['label_ids', 'train_on_this']}
         
         # ============================================================
         # FORWARD 1: Safe samples (no gradient) - get target distribution
@@ -588,7 +622,7 @@ def train_alternating_optimization(
     kl_type: str = "forward",
     skip_router_training: bool = False,
     full_param_training: bool = False,
-    sft_path: str = None,
+    batch_data_path: str = None,
 ):
     """
     Main training function with alternating optimization.
@@ -639,7 +673,7 @@ def train_alternating_optimization(
     
     # Load data
     print("\nLoading prepared batch data...")
-    sft_data, batch_unsafe_experts, batch_expert_masks = load_prepared_batch_data(model_name, sft_path)
+    batch_data, batch_unsafe_experts, batch_expert_masks = load_prepared_batch_data(model_name, batch_data_path)
     
     # Load model and tokenizer
     print("\nLoading model and tokenizer...")
@@ -658,7 +692,7 @@ def train_alternating_optimization(
     
     # Prepare dataset
     print("\nPreparing dataset...")
-    batches = create_batch_structured_dataset(sft_data, tokenizer, batch_size, safe_ratio)
+    batches = create_batch_structured_dataset(batch_data, tokenizer, batch_size, safe_ratio)
     train_dataset = create_batch_aware_dataset(batches, tokenizer)
     
     # Create dataloader
@@ -876,11 +910,11 @@ if __name__ == "__main__":
         help="Enable full parameter finetuning (train all parameters, no expert selection)"
     )
     parser.add_argument(
-        "--sft_path",
+        "--batch_data_path",
         type=str,
         default=None,
         required=True,
-        help="Path to the SFT dataset pickle file"
+        help="Path to the batch data pickle file"
     )
     
     args = parser.parse_args()
@@ -897,6 +931,6 @@ if __name__ == "__main__":
         kl_type=args.kl_type,
         skip_router_training=args.skip_router_training,
         full_param_training=args.full_param_training,
-        sft_path=args.sft_path,
+        batch_data_path=args.batch_data_path,
     )
 
