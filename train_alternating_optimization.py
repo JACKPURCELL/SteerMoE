@@ -79,7 +79,8 @@ def create_batch_structured_dataset(
     sft_data: Dict,
     tokenizer: AutoTokenizer,
     batch_size: int = 16,
-    safe_ratio: float = 0.5
+    safe_ratio: float = 0.5,
+    data_percent: float = 1.0,
 ) -> List[List[Dict]]:
     """
     Create a dataset that preserves batch structure.
@@ -94,7 +95,7 @@ def create_batch_structured_dataset(
     """
     batch_data_list = sft_data['batch_data_list']
     all_batches = []
-    
+    batch_data_list = batch_data_list[:int(len(batch_data_list) * data_percent)]
     for batch_data in batch_data_list:
         safe_indices = batch_data['safe_indices']
         unsafe_indices = batch_data['unsafe_indices']
@@ -614,15 +615,18 @@ def train_alternating_optimization(
     model_name: str,
     output_dir: str = "./alternating_optimization",
     num_rounds: int = 3,
-    epochs_per_round: int = 1,
+    expert_epochs_per_round: int = 1,
+    router_epochs_per_round: int = 1,
     batch_size: int = 16,
     safe_ratio: float = 0.5,
     expert_lr: float = 5e-5,
     router_lr: float = 1e-4,
     kl_type: str = "forward",
+    skip_expert_training: bool = False,
     skip_router_training: bool = False,
     full_param_training: bool = False,
     batch_data_path: str = None,
+    data_percent: float = 1.0,
 ):
     """
     Main training function with alternating optimization.
@@ -644,12 +648,14 @@ def train_alternating_optimization(
         model_name: HuggingFace model name
         output_dir: Directory to save checkpoints
         num_rounds: Number of alternating optimization rounds
-        epochs_per_round: Number of epochs per optimization step
+        expert_epochs_per_round: Number of epochs per round for expert training
+        router_epochs_per_round: Number of epochs per round for router training
         batch_size: Training batch size
         safe_ratio: Ratio of safe prompts in each batch
         expert_lr: Learning rate for expert finetuning
         router_lr: Learning rate for router optimization
         kl_type: Type of KL divergence ("forward" = push unsafe to match safe)
+        skip_expert_training: If True, skip expert training (only train routers)
         skip_router_training: If True, skip router training (only train experts)
         full_param_training: If True, finetune all parameters (no expert selection, skip router training)
     """
@@ -657,18 +663,27 @@ def train_alternating_optimization(
     if full_param_training:
         print("FULL PARAMETER FINETUNING")
         print(f"  Mode: All model parameters (no expert selection)")
+    elif skip_expert_training and skip_router_training:
+        print("WARNING: Both expert and router training are skipped!")
+    elif skip_expert_training:
+        print("ROUTER-ONLY TRAINING")
+    elif skip_router_training:
+        print("EXPERT-ONLY TRAINING")
     else:
         print("ALTERNATING OPTIMIZATION TRAINING")
     print(f"  Rounds: {num_rounds}")
-    print(f"  Epochs per round: {epochs_per_round}")
+    print(f"  Expert epochs per round: {expert_epochs_per_round}")
+    print(f"  Router epochs per round: {router_epochs_per_round}")
     print(f"  Expert LR: {expert_lr}, Router LR: {router_lr}")
     if full_param_training:
-        print(f"  Training Mode: Full parameter finetuning")
+        print(f"  Expert Training: ENABLED (full param mode)")
         print(f"  Router Training: SKIPPED (full param mode)")
-    elif skip_router_training:
-        print(f"  Router Training: SKIPPED (only training experts)")
     else:
-        print(f"  Router Training: ENABLED (KL type: {kl_type})")
+        print(f"  Expert Training: {'SKIPPED' if skip_expert_training else 'ENABLED'}")
+        if skip_router_training:
+            print(f"  Router Training: SKIPPED")
+        else:
+            print(f"  Router Training: ENABLED (KL type: {kl_type})")
     print("=" * 80)
     
     # Load data
@@ -692,7 +707,7 @@ def train_alternating_optimization(
     
     # Prepare dataset
     print("\nPreparing dataset...")
-    batches = create_batch_structured_dataset(batch_data, tokenizer, batch_size, safe_ratio)
+    batches = create_batch_structured_dataset(batch_data, tokenizer, batch_size, safe_ratio, data_percent)
     train_dataset = create_batch_aware_dataset(batches, tokenizer)
     
     # Create dataloader
@@ -725,38 +740,41 @@ def train_alternating_optimization(
         # ====================
         # Step 1: Finetune experts (full params or unsafe experts only)
         # ====================
-        if full_param_training:
-            print(f"\n[Round {round_idx + 1}] Step 1: Finetuning all parameters...")
-            trainable_params = unfreeze_all_parameters(model)
-            total_params = sum(p.numel() for p in model.parameters())
-            print(f"  Training Mode: Full parameter finetuning")
-            print(f"  Trainable: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.4f}%)")
-        else:
-            print(f"\n[Round {round_idx + 1}] Step 1: Finetuning unsafe experts...")
-            unfrozen_experts = freeze_all_except_unsafe_experts(model, batch_unsafe_experts)
-            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-            total_params = sum(p.numel() for p in model.parameters())
-            print(f"  Unfrozen experts: {unfrozen_experts}")
-            print(f"  Trainable: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.4f}%)")
-        
-        # Create optimizer for experts
-        expert_optimizer = torch.optim.AdamW(
-            [p for p in model.parameters() if p.requires_grad],
-            lr=expert_lr
-        )
-        
-        # Train experts
-        for epoch in range(epochs_per_round):
-            expert_loss = train_one_epoch_experts(
-                model, dataloader, expert_optimizer, device, epoch + 1, round_idx + 1
+        if not skip_expert_training:
+            if full_param_training:
+                print(f"\n[Round {round_idx + 1}] Step 1: Finetuning all parameters...")
+                trainable_params = unfreeze_all_parameters(model)
+                total_params = sum(p.numel() for p in model.parameters())
+                print(f"  Training Mode: Full parameter finetuning")
+                print(f"  Trainable: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.4f}%)")
+            else:
+                print(f"\n[Round {round_idx + 1}] Step 1: Finetuning unsafe experts...")
+                unfrozen_experts = freeze_all_except_unsafe_experts(model, batch_unsafe_experts)
+                trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+                total_params = sum(p.numel() for p in model.parameters())
+                print(f"  Unfrozen experts: {unfrozen_experts}")
+                print(f"  Trainable: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.4f}%)")
+            
+            # Create optimizer for experts
+            expert_optimizer = torch.optim.AdamW(
+                [p for p in model.parameters() if p.requires_grad],
+                lr=expert_lr
             )
-            print(f"  [Round {round_idx + 1}] Expert Training Epoch {epoch + 1}: Loss = {expert_loss:.4f}")
-            training_logs.append({
-                'round': round_idx + 1,
-                'step': 'expert',
-                'epoch': epoch + 1,
-                'loss': expert_loss
-            })
+            
+            # Train experts
+            for epoch in range(expert_epochs_per_round):
+                expert_loss = train_one_epoch_experts(
+                    model, dataloader, expert_optimizer, device, epoch + 1, round_idx + 1
+                )
+                print(f"  [Round {round_idx + 1}] Expert Training Epoch {epoch + 1}: Loss = {expert_loss:.4f}")
+                training_logs.append({
+                    'round': round_idx + 1,
+                    'step': 'expert',
+                    'epoch': epoch + 1,
+                    'loss': expert_loss
+                })
+        else:
+            print(f"\n[Round {round_idx + 1}] Step 1: Expert training SKIPPED")
         
         # ====================
         # Step 2: Optimize router consistency (freeze experts)
@@ -776,7 +794,7 @@ def train_alternating_optimization(
             )
             
             # Train routers
-            for epoch in range(epochs_per_round):
+            for epoch in range(router_epochs_per_round):
                 router_loss = train_one_epoch_router(
                     model, dataloader, router_optimizer, device, epoch + 1, round_idx + 1,
                     router_logits_storage, kl_type
@@ -809,6 +827,10 @@ def train_alternating_optimization(
     # Save training logs and metadata
     if full_param_training:
         training_strategy = "full_parameter_finetuning"
+    elif skip_expert_training and skip_router_training:
+        training_strategy = "no_training"
+    elif skip_expert_training:
+        training_strategy = "router_only"
     elif skip_router_training:
         training_strategy = "expert_only"
     else:
@@ -818,12 +840,14 @@ def train_alternating_optimization(
         "model_name": model_name,
         "training_strategy": training_strategy,
         "num_rounds": num_rounds,
-        "epochs_per_round": epochs_per_round,
+        "expert_epochs_per_round": expert_epochs_per_round,
+        "router_epochs_per_round": router_epochs_per_round,
         "batch_size": batch_size,
         "safe_ratio": safe_ratio,
-        "expert_lr": expert_lr,
+        "expert_lr": expert_lr if not skip_expert_training else None,
         "router_lr": router_lr if not skip_router_training and not full_param_training else None,
         "kl_type": kl_type if not skip_router_training and not full_param_training else None,
+        "skip_expert_training": skip_expert_training,
         "skip_router_training": skip_router_training,
         "full_param_training": full_param_training,
         "num_batches": len(batches),
@@ -863,10 +887,16 @@ if __name__ == "__main__":
         help="Number of alternating optimization rounds"
     )
     parser.add_argument(
-        "--epochs_per_round",
+        "--expert_epochs_per_round",
         type=int,
         default=1,
-        help="Number of epochs per optimization step (expert or router)"
+        help="Number of epochs per round for expert training"
+    )
+    parser.add_argument(
+        "--router_epochs_per_round",
+        type=int,
+        default=1,
+        help="Number of epochs per round for router training"
     )
     parser.add_argument(
         "--batch_size",
@@ -900,6 +930,11 @@ if __name__ == "__main__":
         help="Type of KL divergence for router consistency (forward=push unsafe to match safe)"
     )
     parser.add_argument(
+        "--skip_expert_training",
+        action="store_true",
+        help="Skip expert training, only train routers (for ablation study)"
+    )
+    parser.add_argument(
         "--skip_router_training",
         action="store_true",
         help="Skip router training, only train experts (for ablation study)"
@@ -917,18 +952,27 @@ if __name__ == "__main__":
         help="Path to the batch data pickle file"
     )
     
+    parser.add_argument(
+        "--data_percent",
+        type=float,
+        default=1.0,
+        help="Percentage of data to use for training"
+    )
     args = parser.parse_args()
     
     train_alternating_optimization(
         model_name=args.model_name,
         output_dir=args.output_dir,
         num_rounds=args.num_rounds,
-        epochs_per_round=args.epochs_per_round,
+        data_percent=args.data_percent,
+        expert_epochs_per_round=args.expert_epochs_per_round,
+        router_epochs_per_round=args.router_epochs_per_round,
         batch_size=args.batch_size,
         safe_ratio=args.safe_ratio,
         expert_lr=args.expert_lr,
         router_lr=args.router_lr,
         kl_type=args.kl_type,
+        skip_expert_training=args.skip_expert_training,
         skip_router_training=args.skip_router_training,
         full_param_training=args.full_param_training,
         batch_data_path=args.batch_data_path,

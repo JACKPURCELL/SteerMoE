@@ -25,6 +25,7 @@ from alpaca_eval import AlpacaEvalHandler
 from olmoe_fwo import OLMOEFWOHandler
 from deepinception import DEEPINCEPTIONPlusHandler
 from johnny import JOHNNYHandler
+from xteaming import XteamingHandler
 # Registry of all available dataset handlers
 DATASET_HANDLERS = {
     "mmlu": MMLUHandler,
@@ -38,6 +39,7 @@ DATASET_HANDLERS = {
     "alpaca_eval": AlpacaEvalHandler,
     "olmoe_fwo": OLMOEFWOHandler,
     "johnny": JOHNNYHandler,
+    "xteaming": XteamingHandler,
 }
 
 
@@ -47,7 +49,7 @@ class ModelEvaluator:
     def __init__(self, 
                  model_name: str = "Qwen/Qwen2.5-3B-Instruct",
                  output_dir: str = None,
-                 temperature: float = 0.8,
+                 temperature: float = 1.0,
                  top_p: float = 0.9,
                  vllm: bool = False,
                  prefix: str = "RAW",
@@ -55,6 +57,7 @@ class ModelEvaluator:
                  olmoe_fwo_path: str = None,
                  deepinception_path: str = None,
                  johnny_path: str = None,
+                 xteaming_path: str = None,
                  tensor_parallel_size: int = 1):
         """
         Initialize the model evaluator.
@@ -70,6 +73,7 @@ class ModelEvaluator:
             olmoe_fwo_path: Path to OLMOE-FWO dataset JSON file
             deepinception_path: Path to DEEPINCEPTION dataset JSON file
             johnny_path: Path to Johnny dataset JSON file
+            xteaming_path: Path to Xteaming dataset JSON file
         """
         self.model_name = model_name
         self.output_dir = output_dir
@@ -81,6 +85,7 @@ class ModelEvaluator:
         self.olmoe_fwo_path = olmoe_fwo_path
         self.deepinception_path = deepinception_path    
         self.johnny_path = johnny_path
+        self.xteaming_path = xteaming_path
         self.tensor_parallel_size = tensor_parallel_size
         # Initialize tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -130,6 +135,8 @@ class ModelEvaluator:
                 handler = DEEPINCEPTIONPlusHandler(self.deepinception_path)
             elif dataset_name == "johnny":
                 handler = JOHNNYHandler(self.johnny_path)
+            elif dataset_name == "xteaming":
+                handler = XteamingHandler(self.xteaming_path)
             elif dataset_name in DATASET_HANDLERS:
                 handler = DATASET_HANDLERS[dataset_name]()
             else:
@@ -196,7 +203,8 @@ class ModelEvaluator:
             )
             
             if self.vllm:
-                sampling_params = SamplingParams(max_tokens=4096, temperature=0.7, top_p=0.95)
+                # sampling_params = SamplingParams(max_tokens=4096, temperature=0.7, top_p=0.95)
+                sampling_params = SamplingParams(max_tokens=4096, temperature=self.temperature)
                 outputs = self.llm.generate(batch_texts, sampling_params=sampling_params, use_tqdm=False)
                 batch_responses = [output.outputs[0].text.strip() for output in outputs]
             else:

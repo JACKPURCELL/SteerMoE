@@ -19,6 +19,7 @@ def main(args):
     olmoe_fwo_path = args.olmoe_fwo_path
     deepinception_path = args.deepinception_path
     johnny_path = args.johnny_path
+    xteaming_path = args.xteaming_path
     selected_datasets = args.datasets
     tensor_parallel_size = args.tensor_parallel_size
     print("=== Starting OLMOE-FWO Evaluation ===")
@@ -38,6 +39,7 @@ def main(args):
         olmoe_fwo_path=olmoe_fwo_path,
         deepinception_path=deepinception_path,
         johnny_path=johnny_path,
+        xteaming_path=xteaming_path,
         tensor_parallel_size=tensor_parallel_size
     )
     
@@ -46,7 +48,7 @@ def main(args):
         dataset_names=selected_datasets,
         num_samples_to_eval=100,  # Evaluate 50 samples as in original eval1124.py
         batch_size=8,
-        max_workers=3  # Use 3 workers for concurrent judge evaluation
+        max_workers=5  # Use 3 workers for concurrent judge evaluation
     )
     
     # Save aggregated scores
@@ -104,10 +106,16 @@ if __name__ == "__main__":
         help="Path to Johnny dataset"
     )
     parser.add_argument(
+        "--xteaming_path",
+        type=str,
+        default="/home/stufs1/jiachliang/SteerMoE/0118_exp/xteaming/qwen_test.json",
+        help="Path to Xteaming dataset"
+    )
+    parser.add_argument(
         "--datasets",
         type=str,
         nargs="+",
-        default=["strongreject", "xstest", "olmoe_fwo", "deepinception", "truthfulqa", "johnny"],
+        default=["strongreject", "xstest", "olmoe_fwo", "deepinception", "truthfulqa", "johnny", "xteaming", "mmlu", "gsm8k"],
         # default=["strongreject", "xstest", "olmoe_fwo", "deepinception", "truthfulqa"],
         help="List of datasets to evaluate (e.g., strongreject xstest olmoe_fwo)"
     )

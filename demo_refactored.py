@@ -881,6 +881,38 @@ def identify_unsafe_experts(
     return unsafe_experts
 
 
+def identify_random_experts(
+    num_layers: int,
+    n_experts: int,
+    top_k: int,
+    seed: int = 42
+) -> List[Tuple[int, int]]:
+    """
+    Randomly select experts for ablation study.
+    
+    Args:
+        num_layers: Number of layers in the model
+        n_experts: Number of experts per layer
+        top_k: Number of experts to randomly select
+        seed: Random seed for reproducibility
+        
+    Returns:
+        List of (layer, expert) tuples for randomly selected experts
+    """
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    
+    # Generate all possible (layer, expert) pairs
+    all_experts = [(layer, expert) for layer in range(num_layers) for expert in range(n_experts)]
+    
+    # Randomly sample top_k experts
+    random_experts = random.sample(all_experts, min(top_k, len(all_experts)))
+    
+    print(f"Randomly selected {len(random_experts)} experts (seed={seed})")
+    return random_experts
+
+
 # ============================================================================
 # Step 5: Prepare Training Data with Expert Masking
 # ============================================================================
@@ -1146,6 +1178,12 @@ def parse_args():
         help="Name or path of the model to use"
     )
     parser.add_argument(
+        "--model_length",
+        type=int,
+        default=4000,
+        help="Length of the model"
+    )
+    parser.add_argument(
         "--max_generation_tokens",
         type=int,
         default=128,
@@ -1169,11 +1207,23 @@ def parse_args():
         default=0.05,
         help="Risk difference threshold for global unsafe experts"
     )
+    parser.add_argument(
+        "--use_random_experts",
+        action="store_true",
+        help="Use random experts instead of risk-diff based selection (ablation study)"
+    )
+    parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=42,
+        help="Random seed for random expert selection"
+    )
     return parser.parse_args()
 
 
 def main_pipeline(dataset_path, model_name, max_generation_tokens, 
-                  unsafe_expert_top_k, batch_unsafe_threshold, global_unsafe_threshold, experiment_dir):
+                  unsafe_expert_top_k, batch_unsafe_threshold, global_unsafe_threshold, experiment_dir, model_length,
+                  use_random_experts=False, random_seed=42):
     """
     Main pipeline for identifying and fine-tuning unsafe experts.
     
@@ -1184,6 +1234,7 @@ def main_pipeline(dataset_path, model_name, max_generation_tokens,
         unsafe_expert_top_k: Top-k experts to identify as unsafe
         batch_unsafe_threshold: Risk difference threshold for batch-level unsafe experts
         global_unsafe_threshold: Risk difference threshold for global unsafe experts
+        model_length: Length of the model
     """
     # Create experiment directory with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1205,6 +1256,8 @@ def main_pipeline(dataset_path, model_name, max_generation_tokens,
         "unsafe_expert_top_k": unsafe_expert_top_k,
         "batch_unsafe_threshold": batch_unsafe_threshold,
         "global_unsafe_threshold": global_unsafe_threshold,
+        "use_random_experts": use_random_experts,
+        "random_seed": random_seed if use_random_experts else None,
     }
     config_path = os.path.join(experiment_dir, "config.json")
     with open(config_path, 'w') as f:
@@ -1220,15 +1273,15 @@ def main_pipeline(dataset_path, model_name, max_generation_tokens,
     print("=" * 80)
     register_vllm_save_models()
     sampling_params = SamplingParams(
-        temperature=0.6, 
-        top_p=0.9, 
+        temperature=1.0, 
+        # top_p=0.9, 
         max_tokens=max_generation_tokens,  # Now we can use full generation (fixed accumulation)
         seed=42
     )
     llm = LLM(
         model=model_name,
-        max_seq_len_to_capture=4000,
-        max_model_len=4000,
+        max_seq_len_to_capture=model_length,
+        max_model_len=model_length,
         tensor_parallel_size=torch.cuda.device_count(),
         gpu_memory_utilization=0.95,
         max_num_seqs=1,
@@ -1314,6 +1367,16 @@ def main_pipeline(dataset_path, model_name, max_generation_tokens,
             except:
                 print(item)
                 continue
+    elif "xteaming" in dataset_path:
+        print("Loading xteaming dataset setting...")
+        for item in dataset:
+            goal = item["goal"]
+            safe_messages = [
+                {"role": "user", "content": goal}
+            ]
+            safe_prompts.append({"messages": safe_messages, "goal": goal})
+            unsafe_messages = item["all_prompts"]
+            unsafe_prompts.append({"messages": unsafe_messages, "goal": goal})
     elif "all3" in dataset_path:
         print("Loading all3 dataset setting...")
         for item in dataset:
@@ -1338,6 +1401,8 @@ def main_pipeline(dataset_path, model_name, max_generation_tokens,
             except:
                 print("drop data item:", item)
                 continue
+    else:
+        exit()
     print(f"Prepared {len(safe_prompts)} safe prompts and {len(unsafe_prompts)} unsafe prompts")
     
     # Process prompts in mixed batches
@@ -1409,21 +1474,40 @@ def main_pipeline(dataset_path, model_name, max_generation_tokens,
         batch_risk_diffs.append(batch_risk_diff)
         
         # Identify unsafe experts for THIS BATCH
-        # Use lower threshold for per-batch identification (less data per batch)
-        batch_unsafe = identify_unsafe_experts(batch_risk_diff, threshold=batch_unsafe_threshold, top_k=unsafe_expert_top_k)
-        batch_unsafe_experts.append(batch_unsafe)
+        if use_random_experts:
+            # Use random experts for ablation study
+            # Use batch_idx as part of seed to ensure different random selection per batch
+            batch_random_seed = random_seed + batch_data['batch_idx']
+            batch_unsafe = identify_random_experts(num_layers, n_experts, unsafe_expert_top_k, seed=batch_random_seed)
+            print(f"  Batch {batch_data['batch_idx']}: Using random experts (seed={batch_random_seed})")
+        else:
+            # Use lower threshold for per-batch identification (less data per batch)
+            batch_unsafe = identify_unsafe_experts(batch_risk_diff, threshold=batch_unsafe_threshold, top_k=unsafe_expert_top_k)
+            # Debug: print batch risk_diff stats
+            if len(batch_risk_diffs) <= 3:  # Print for first 3 batches
+                print(f"  Batch {batch_data['batch_idx']}: risk_diff range [{batch_risk_diff['risk_diff'].min():.4f}, {batch_risk_diff['risk_diff'].max():.4f}]")
         
-        # Debug: print batch risk_diff stats
-        if len(batch_risk_diffs) <= 3:  # Print for first 3 batches
-            print(f"  Batch {batch_data['batch_idx']}: risk_diff range [{batch_risk_diff['risk_diff'].min():.4f}, {batch_risk_diff['risk_diff'].max():.4f}]")
+        batch_unsafe_experts.append(batch_unsafe)
         
         # Create expert mask for THIS BATCH
         batch_mask = create_expert_mask(num_layers, n_experts, batch_unsafe)
         batch_expert_masks.append(batch_mask)
     
     # Also aggregate for global view
-    print("\nAggregating risk differences across batches for global view...")
-    risk_diff_df = aggregate_batch_risk_diffs(batch_risk_diffs)
+    if use_random_experts:
+        print("\nSkipping risk difference aggregation (using random experts)")
+        # Create a dummy risk_diff_df for compatibility
+        # We'll use the first batch's structure to create a dummy dataframe
+        if len(batch_risk_diffs) > 0:
+            dummy_df = batch_risk_diffs[0].copy()
+            dummy_df['risk_diff'] = 0.0  # Set all risk_diff to 0 for random experts
+            risk_diff_df = dummy_df
+        else:
+            # Fallback: create empty dataframe with correct structure
+            risk_diff_df = pd.DataFrame(columns=['layer', 'expert', 'risk_diff', 'Layer_Expert', 'risk_diff_abs'])
+    else:
+        print("\nAggregating risk differences across batches for global view...")
+        risk_diff_df = aggregate_batch_risk_diffs(batch_risk_diffs)
     
     # Save per-batch and aggregated risk diff
     risk_diff_data = {
@@ -1438,21 +1522,28 @@ def main_pipeline(dataset_path, model_name, max_generation_tokens,
     
     # Print statistics
     print("\n" + "=" * 80)
-    print("Step 4: Unsafe Experts Summary")
+    if use_random_experts:
+        print("Step 4: Random Experts Summary (Ablation Study)")
+    else:
+        print("Step 4: Unsafe Experts Summary")
     print("=" * 80)
     print(f"Number of batches: {len(batch_unsafe_experts)}")
-    print(f"\nPer-batch unsafe experts count:")
+    print(f"\nPer-batch {'random' if use_random_experts else 'unsafe'} experts count:")
     for i, unsafe_list in enumerate(batch_unsafe_experts[:5]):  # Show first 5
-        print(f"  Batch {i}: {len(unsafe_list)} unsafe experts")
+        print(f"  Batch {i}: {len(unsafe_list)} experts")
     
-    # Global top unsafe experts
-    print(f"\nGlobal top 10 unsafe experts (aggregated across all batches):")
-    print(risk_diff_df.head(10)[["Layer_Expert", "risk_diff", "a_safe_n", "a_unsafe_n"]])
-    
-    # Show some batch-specific examples
-    print(f"\nBatch 0 top 5 unsafe experts:")
-    batch_0_top = batch_risk_diffs[0].nlargest(5, 'risk_diff')[["layer", "expert", "risk_diff"]]
-    print(batch_0_top)
+    if not use_random_experts:
+        # Global top unsafe experts
+        print(f"\nGlobal top 10 unsafe experts (aggregated across all batches):")
+        print(risk_diff_df.head(10)[["Layer_Expert", "risk_diff", "a_safe_n", "a_unsafe_n"]])
+        
+        # Show some batch-specific examples
+        print(f"\nBatch 0 top 5 unsafe experts:")
+        batch_0_top = batch_risk_diffs[0].nlargest(5, 'risk_diff')[["layer", "expert", "risk_diff"]]
+        print(batch_0_top)
+    else:
+        print(f"\nRandom experts selected (seed={random_seed})")
+        print(f"Sample of random experts from batch 0: {batch_unsafe_experts[0][:5]}")
     
     # Prepare SFT dataset from batches
     print("\n" + "=" * 80)
@@ -1489,6 +1580,8 @@ def main_pipeline(dataset_path, model_name, max_generation_tokens,
         "num_experts_per_tok": num_experts_per_tok,
         "batch_size": BATCH_SIZE,
         "safe_ratio": SAFE_RATIO,
+        "use_random_experts": use_random_experts,
+        "random_seed": random_seed if use_random_experts else None,
     }
     batch_data_path = os.path.join(experiment_dir, f"batch_data_{model_name.replace('/', '--')}.pkl")
     pd.to_pickle(batch_data_with_training_info, batch_data_path)
@@ -1526,11 +1619,14 @@ if __name__ == "__main__":
     args = parse_args()
     main_pipeline(
         dataset_path=args.dataset_path,
+        model_length=args.model_length,
         model_name=args.model_name,
         max_generation_tokens=args.max_generation_tokens,
         unsafe_expert_top_k=args.unsafe_expert_top_k,
         batch_unsafe_threshold=args.batch_unsafe_threshold,
         global_unsafe_threshold=args.global_unsafe_threshold,
-        experiment_dir=args.experiment_dir
+        experiment_dir=args.experiment_dir,
+        use_random_experts=args.use_random_experts,
+        random_seed=args.random_seed
     )
 
